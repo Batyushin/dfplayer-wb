@@ -15,10 +15,36 @@ fi
 INSTALL_DIR="/usr/local/bin"
 SERVICE_DIR="/etc/systemd/system"
 RULES_FILE="/etc/wb-rules/DFPlayer.js"
+SERVICE_NAME="dfplayer-mqtt.service"
+SCRIPT_FILE="$INSTALL_DIR/dfplayer_mqtt.sh"
+
+# --- 0. Удаление старой версии (если есть) ---
+echo "[0/5] Удаление старой версии..."
+if systemctl is-active --quiet $SERVICE_NAME; then
+    echo "  Остановка сервиса..."
+    systemctl stop $SERVICE_NAME
+fi
+if systemctl is-enabled --quiet $SERVICE_NAME; then
+    echo "  Отключение автозапуска..."
+    systemctl disable $SERVICE_NAME
+fi
+if [ -f "$SERVICE_DIR/$SERVICE_NAME" ]; then
+    echo "  Удаление systemd сервиса..."
+    rm -f "$SERVICE_DIR/$SERVICE_NAME"
+fi
+if [ -f "$SCRIPT_FILE" ]; then
+    echo "  Удаление старого скрипта..."
+    rm -f "$SCRIPT_FILE"
+fi
+if [ -f "$RULES_FILE" ]; then
+    echo "  Удаление старых правил..."
+    rm -f "$RULES_FILE"
+fi
+systemctl daemon-reload 2>/dev/null || true
 
 # --- 1. dfplayer_mqtt.sh ---
 echo "[1/5] Установка скрипта..."
-cat > $INSTALL_DIR/dfplayer_mqtt.sh << 'EOF'
+cat > $SCRIPT_FILE << 'EOF'
 #!/bin/bash
 PORT="/dev/ttyS7"
 BROKER="localhost"
@@ -37,7 +63,7 @@ mosquitto_sub -h $BROKER -t "$TOPIC" | while read CMD; do
         prev)   printf '\x7E\xFF\x06\x02\x00\x00\x00\xFE\xF9\xEF' > $PORT ;;
         vol_up) printf '\x7E\xFF\x06\x04\x00\x00\x00\xFE\xF7\xEF' > $PORT ;;
         vol_down) printf '\x7E\xFF\x06\x05\x00\x00\x00\xFE\xF6\xEF' > $PORT ;;
-        volume:*) 
+        volume:*)
             VOL="${CMD#volume:}"
             VOL="${VOL%%[^0-9]*}"
             [ -z "$VOL" ] && VOL=15
@@ -48,8 +74,7 @@ mosquitto_sub -h $BROKER -t "$TOPIC" | while read CMD; do
             H=$((CS >> 8)); L=$((CS & 0xFF))
             printf "\x7E\xFF\x06\x06\x00\x00\x$(printf '%02X' $VOL)\x$(printf '%02X' $H)\x$(printf '%02X' $L)\xEF" > $PORT
             ;;
-        track:*) 
-            # Формат: track:001/001 или track:1:1
+        track:*)
             IFS=':/' read -r _ FOLDER TRACK <<< "${CMD#track:}"
             FOLDER=$(echo "$FOLDER" | xargs)
             TRACK=$(echo "$TRACK" | xargs)
@@ -69,11 +94,11 @@ mosquitto_sub -h $BROKER -t "$TOPIC" | while read CMD; do
     esac
 done
 EOF
-chmod +x $INSTALL_DIR/dfplayer_mqtt.sh
+chmod +x $SCRIPT_FILE
 
 # --- 2. systemd сервис ---
 echo "[2/5] Установка сервиса..."
-cat > $SERVICE_DIR/dfplayer-mqtt.service << 'EOF'
+cat > $SERVICE_DIR/$SERVICE_NAME << 'EOF'
 [Unit]
 Description=DFPlayer MQTT Listener (Tracks 001/001)
 After=network.target mosquitto.service
@@ -90,7 +115,7 @@ WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
-systemctl enable dfplayer-mqtt.service
+systemctl enable $SERVICE_NAME
 
 # --- 3. WB Rules с текстовым полем ---
 echo "[3/5] Установка правил..."
@@ -108,7 +133,7 @@ defineVirtualDevice("dfplayer", {
         VolUp:       { type: "pushbutton", order: 6 },
         VolDown:     { type: "pushbutton", order: 7 },
         Volume:      { type: "range", min: 0, max: 30, value: 15, order: 8 },
-        TrackPath:   { type: "text", value: "001/001", order: 9 },  // ← текстовое поле
+        TrackPath:   { type: "text", value: "001/001", order: 9 },
         PlayTrack:   { type: "pushbutton", order: 10 }
     }
 });
@@ -118,7 +143,6 @@ function send(cmd) {
     publish("dfplayer/cmd", cmd, 0, true);
 }
 
-// Основные кнопки
 defineRule("play",   { whenChanged: "dfplayer/Play",      then: function() { send("play"); } });
 defineRule("pause",  { whenChanged: "dfplayer/Pause",     then: function() { send("pause"); } });
 defineRule("stop",   { whenChanged: "dfplayer/Stop",      then: function() { send("stop"); } });
@@ -136,7 +160,6 @@ defineRule("volume", {
     }
 });
 
-// Воспроизведение по пути: 001/001
 defineRule("play_track_path", {
     whenChanged: "dfplayer/PlayTrack",
     then: function() {
@@ -153,7 +176,7 @@ EOF
 
 # --- 4. Перезапуск ---
 echo "[4/5] Перезапуск сервисов..."
-systemctl restart dfplayer-mqtt.service
+systemctl restart $SERVICE_NAME
 wb-rules restart
 
 # --- 5. Готово ---
