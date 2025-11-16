@@ -1,6 +1,6 @@
 # DFPlayer Mini для Wiren Board (WB Rules + MQTT)
 
-**Управление DFPlayer Mini через Wiren Board без Node-RED**  
+**Управление DFPlayer Mini через Wiren Board RS232**  
 Работает на **WB 7+**, использует **MQTT + внешний скрипт**.
 
 ---
